@@ -24,6 +24,8 @@
 #include "wiring_private.h"
 #include <SPI.hpp>
 
+#include <espressif/esp_common.h>
+
 
 // If the SPI library has transaction support, these functions
 // establish settings and protect from interference from other
@@ -48,6 +50,8 @@ static inline void spi_end(void) {
 #define spi_end()
 #endif
 
+
+void writeBlock(uint16_t color, uint32_t repeat);
 
 // Constructor when using software SPI.  All output pins are configurable.
 Adafruit_ILI9341::Adafruit_ILI9341(int8_t cs, int8_t dc, int8_t mosi,
@@ -534,6 +538,8 @@ void Adafruit_ILI9341::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
   if (hwSPI) spi_begin();
   setAddrWindow(x, y, x+w-1, y+h-1);
 
+  uint32_t n = (uint32_t)w * (uint32_t)h;
+
   uint8_t hi = color >> 8, lo = color;
 
 #if defined(USE_FAST_PINIO)
@@ -544,12 +550,8 @@ void Adafruit_ILI9341::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
   digitalWrite(_cs, LOW);
 #endif
 
-  for(y=h; y>0; y--) {
-    for(x=w; x>0; x--) {
-      spiwrite(hi);
-      spiwrite(lo);
-    }
-  }
+  writeBlock(color, n);
+
 #if defined(USE_FAST_PINIO)
   *csport |= cspinmask;
 #else
@@ -558,6 +560,69 @@ void Adafruit_ILI9341::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
 
   if (hwSPI) spi_end();
 }
+
+/*
+ * As in https://github.com/Bodmer/TFT_eSPI/blob/master/TFT_eSPI.cpp#L4806
+ */
+void writeBlock(uint16_t color, uint32_t repeat)
+{
+	uint16_t color16 = (color >> 8) | (color << 8);
+	uint32_t color32 = color16 | color16 << 16;
+	uint32_t mask = ~(SPI_USER1_MOSI_BITLEN_M << SPI_USER1_MOSI_BITLEN_S);
+	mask = SPI(1).USER1 & mask;
+	SPI(1).USER0 = SPI_USER0_MOSI | SPI_USER0_CLOCK_IN_EDGE;
+
+	SPI(1).W[0] = color32;
+	SPI(1).W[1] = color32;
+	SPI(1).W[2] = color32;
+	SPI(1).W[3] = color32;
+	if (repeat > 8)
+	{
+		SPI(1).W[4] = color32;
+		SPI(1).W[5] = color32;
+		SPI(1).W[6] = color32;
+		SPI(1).W[7] = color32;
+	}
+	if (repeat > 16)
+	{
+		SPI(1).W[8] = color32;
+		SPI(1).W[9] = color32;
+		SPI(1).W[10] = color32;
+		SPI(1).W[11] = color32;
+	}
+	if (repeat > 24)
+	{
+		SPI(1).W[12] = color32;
+		SPI(1).W[13] = color32;
+		SPI(1).W[14] = color32;
+		SPI(1).W[15] = color32;
+	}
+	if (repeat > 31)
+	{
+		SPI(1).USER1 = mask | (511 << SPI_USER1_MOSI_BITLEN_S);
+		while(repeat>31)
+		{
+#if defined SPI_FREQUENCY && (SPI_FREQUENCY == 80000000)
+			if(SPI(1).CMD & SPI_CMD_USR) // added to sync with flag change
+#endif
+			while(SPI(1).CMD & SPI_CMD_USR) {}
+			SPI(1).CMD |= SPI_CMD_USR;
+			repeat -= 32;
+		}
+		while(SPI(1).CMD & SPI_CMD_USR) {}
+	}
+
+	if (repeat)
+	{
+		repeat = (repeat << 4) - 1;
+		SPI(1).USER1 = mask | (repeat << SPI_USER1_MOSI_BITLEN_S);
+		SPI(1).CMD |= SPI_CMD_USR;
+		while(SPI(1).CMD & SPI_CMD_USR) {}
+	}
+
+	SPI(1).USER0 = SPI_USER0_MOSI | SPI_USER0_DUPLEX | SPI_USER0_CLOCK_IN_EDGE;
+}
+
 
 
 // Pass 8-bit (each) R,G,B, get back 16-bit packed color
